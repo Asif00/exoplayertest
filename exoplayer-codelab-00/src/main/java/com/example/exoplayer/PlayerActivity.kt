@@ -17,42 +17,104 @@ package com.example.exoplayer
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.Util
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.exoplayer.databinding.ActivityPlayerBinding
+import kotlinx.coroutines.*
+
 
 /**
  * A fullscreen activity to play audio or video streams.
+ * Adds a basic analytics component that reports the following playback events:
+
+    - A single event when playback begins.
+        Assumption: This means anytime playback starts during the duration
+    - An event sent every second that includes the current player position and information about the selected track(s).
+    - An event when the bitrate changes that includes information about the previous and new bitrate.
+
+ Test Videos:
+        https://gist.github.com/jsturgis/3b19447b304616f18657
  */
 class PlayerActivity : AppCompatActivity() {
 
+    private val scope = MainScope() // could also use an other scope such as viewModelScope if available
+    var job: Job? = null
+
+    companion object {
+        const val TAG = "PlayerActivity"
+    }
     private var playWhenReady = true
     private var currentItem = 0
     private var playbackPosition = 0L
-    private var player: ExoPlayer? = null
+    var exoLogPlayer: ExoPlayer? = null
+
+
+    private val playbackStateListener: ComcastPlayer.Listener = playbackStateListener()
+
     private val viewBinding by lazy(LazyThreadSafetyMode.NONE) {
         ActivityPlayerBinding.inflate(layoutInflater)
     }
-
     private fun initializePlayer() {
-        player = ExoPlayer.Builder(this)
+        exoLogPlayer = ExoPlayer.Builder(this)
             .build()
-            .also { exoPlayer ->
-                viewBinding.videoView.player = exoPlayer
+            .also { comcastPlayer ->
+                viewBinding.videoView.player = comcastPlayer
 
-                val mediaItem = MediaItem.fromUri(getString(R.string.media_url_mp4))
-                exoPlayer.setMediaItem(mediaItem)
+                val mediaItem = MediaItem.fromUri(getString(R.string.media_url_tears_mp4))
+                comcastPlayer.setMediaItem(mediaItem)
 
-                exoPlayer.playWhenReady = playWhenReady
-                exoPlayer.seekTo(currentItem, playbackPosition)
-                exoPlayer.prepare()
+                comcastPlayer.playWhenReady = playWhenReady
+                comcastPlayer.seekTo(currentItem, playbackPosition)
+                comcastPlayer.addListener(playbackStateListener)
+
+                comcastPlayer.prepare()
+                startLoggerTimer(mediaItem.mediaMetadata)//
             }
     }
+    private fun playbackStateListener() = object : ComcastPlayer.Listener {
+
+        override fun onRenderedFirstFrame() {
+            super.onRenderedFirstFrame()
+            Log.d(TAG, "onRenderedFirstFrame asif")
+
+        }
+        override fun onVideoSizeChanged(videoSize: VideoSize) {
+            super.onVideoSizeChanged(videoSize)
+            Log.d(TAG, "onVideoSizeChanged asif videoSize $videoSize")
+
+        }
+
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            val stateString: String = when (playbackState) {
+                ExoPlayer.STATE_IDLE -> "ExoPlayer.STATE_IDLE      -"
+                ExoPlayer.STATE_BUFFERING -> "ExoPlayer.STATE_BUFFERING -"
+                ExoPlayer.STATE_READY -> "ExoPlayer.STATE_READY     -"
+                ExoPlayer.STATE_ENDED -> "ExoPlayer.STATE_ENDED     -"
+                else -> "UNKNOWN_STATE             -"
+            }
+            if(stateString.contains("STATE_READY")){
+                Log.d(TAG, "changed state to streaming in progress...")
+            }
+            Log.d(TAG, "changed state to $stateString")
+            //Log.d(TAG, "changed state to playbackPosition $playbackPosition")
+            Log.d(TAG, "minVideoBitrate ${exoLogPlayer?.trackSelectionParameters?.minVideoBitrate}")
+            Log.d(TAG, "maxVideoBitrate ${exoLogPlayer?.trackSelectionParameters?.maxVideoBitrate}")
+            //Log.d(TAG, "changed state to minVideoBitrate ${exoPlayerLog?.trackSelectionParameters?.bit}")
+
+
+
+        }
+    }
+
     public override fun onStart() {
         super.onStart()
         //Multiple window support
@@ -60,11 +122,11 @@ class PlayerActivity : AppCompatActivity() {
             initializePlayer()
         }
     }
-
     public override fun onResume() {
         super.onResume()
         hideSystemUi()
-        if ((Util.SDK_INT <= 23 || player == null)) {
+        //TODO: Document this
+        if ((Util.SDK_INT <= 23 || exoLogPlayer == null)) {
             initializePlayer()
         }
     }
@@ -76,6 +138,7 @@ class PlayerActivity : AppCompatActivity() {
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(viewBinding.root)
@@ -96,12 +159,32 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
-        player?.let { exoPlayer ->
+        stopLoggerTimer()
+        exoLogPlayer?.let { exoPlayer ->
             playbackPosition = exoPlayer.currentPosition
             currentItem = exoPlayer.currentMediaItemIndex
             playWhenReady = exoPlayer.playWhenReady
+            exoPlayer.removeListener(playbackStateListener)
             exoPlayer.release()
         }
-        player = null
+        exoLogPlayer = null
+    }
+
+    private fun startLoggerTimer(mediaMetadata: MediaMetadata) {
+        stopLoggerTimer()
+        //Start coroutine in its scope to log events
+        job = scope.launch {
+
+            while(job?.isActive == true) {
+                Log.d(TAG, "currentPosition ${exoLogPlayer?.currentPosition}")
+                Log.d(TAG, "trackNumber ${mediaMetadata.artist} ${mediaMetadata.displayTitle}")
+                delay(1000)
+            }
+        }
+    }
+
+    private fun stopLoggerTimer() {
+        job?.cancel()
+        job = null
     }
 }
